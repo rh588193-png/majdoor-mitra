@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Safety Helmet Dome -->
+    <path
+        android:fillColor="#EA580C"
+        android:pathData="M30,52 C30,38.75 40.75,28 54,28 C67.25,28 78,38.75 78,52 Z" />
+    <!-- Helmet Top Ridge -->
+    <path
+        android:fillColor="#FB923C"
+        android:pathData="M50,24 L58,24 A2,2 0 0 1 60,26 L60,33 L48,33 L48,26 A2,2 0 0 1 50,24 Z" />
+    <!-- Helmet Brim -->
+    <path
+        android:fillColor="#F97316"
+        android:pathData="M27,50 L81,50 A3,3 0 0 1 84,53 A3,3 0 0 1 81,56 L27,56 A3,3 0 0 1 24,53 A3,3 0 0 1 27,50 Z" />
+    <!-- Ledger Card -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,61 L73,61 A4,4 0 0 1 77,65 L77,80 A4,4 0 0 1 73,84 L35,84 A4,4 0 0 1 31,80 L31,65 A4,4 0 0 1 35,61 Z" />
+    <!-- Ledger Lines -->
+    <path
+        android:strokeColor="#1D4ED8"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M39,69 L65,69 M39,76 L56,76" />
+    <!-- Orange Stamp Dot -->
+    <path
+        android:fillColor="#EA580C"
+        android:pathData="M65,76 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+</vector>

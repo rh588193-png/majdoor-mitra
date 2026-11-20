@@ -1,0 +1,814 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pillar 1 / Safety Net: Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------------
+    // Global Hardened Primitives
+    // ------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        (request.auth.token.phone_number is string && request.auth.token.phone_number.size() >= 10)
+      );
+    }
+
+    // Founder / Super Admin check: strictly verified email rh588193@gmail.com or immutable server-provisioned super_admins/{uid}
+    function isSuperAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) ||
+        (
+          request.auth.token.email is string &&
+          request.auth.token.email == 'rh588193@gmail.com' &&
+          request.auth.token.email_verified == true
+        )
+      );
+    }
+
+    function isMobile10(val) {
+      return val is string && val.size() == 10 && val.matches('^[0-9]{10}$');
+    }
+
+    function isMobileE164(val) {
+      return val is string && val.size() == 13 && val.matches('^\\+91[0-9]{10}$');
+    }
+
+    function isYmd(val) {
+      return val is string && val.size() == 10 && val.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isYm(val) {
+      return val is string && val.size() == 7 && val.matches('^[0-9]{4}-[0-9]{2}$');
+    }
+
+    function isMatchesPhone(mobileE164) {
+      return request.auth.token.phone_number is string &&
+        request.auth.token.phone_number == mobileE164;
+    }
+
+    // ------------------------------------------------------------------------
+    // Validation Blueprints (Anti-Update-Gap)
+    // ------------------------------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'role', 'language', 'theme', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'mobile', 'mobileE164', 'email', 'name', 'role',
+          'accountStatus', 'statusReason', 'isFounder', 'language', 'theme',
+          'employerUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && (!('mobile' in data) || data.mobile == '' || isMobile10(data.mobile))
+        && (!('mobileE164' in data) || data.mobileE164 == '' || isMobileE164(data.mobileE164))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 160))
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.role in ['WORKER', 'OWNER', 'SUPER_ADMIN']
+        && (!('accountStatus' in data) || data.accountStatus in ['ACTIVE', 'SUSPENDED', 'DEACTIVATED'])
+        && (!('statusReason' in data) || (data.statusReason is string && data.statusReason.size() <= 300))
+        && (!('isFounder' in data) || data.isFounder is bool)
+        && data.language in ['hi', 'en']
+        && data.theme in ['light', 'dark']
+        && (!('employerUid' in data) || (data.employerUid is string && data.employerUid.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAppSettings(data) {
+      return data.keys().hasAll([
+          'id', 'appName', 'founderName', 'maintenanceMode', 'registrationEnabled',
+          'freePlanWorkerLimit', 'proPlanWorkerLimit', 'proPlanPriceInr',
+          'enterprisePlanPriceInr', 'supportContact', 'announcementBanner',
+          'gpsGeofencing', 'pdfExcelExports', 'whatsappIntegration',
+          'multiSiteManagement', 'cloudBackupRestore', 'customBranding', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'appName', 'founderName', 'maintenanceMode', 'registrationEnabled',
+          'freePlanWorkerLimit', 'proPlanWorkerLimit', 'proPlanPriceInr',
+          'enterprisePlanPriceInr', 'supportContact', 'announcementBanner',
+          'gpsGeofencing', 'pdfExcelExports', 'whatsappIntegration',
+          'multiSiteManagement', 'cloudBackupRestore', 'customBranding', 'updatedAt'
+        ])
+        && data.id == 'global'
+        && data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 80
+        && data.founderName is string && data.founderName.size() >= 1 && data.founderName.size() <= 80
+        && data.maintenanceMode is bool
+        && data.registrationEnabled is bool
+        && data.freePlanWorkerLimit is number && data.freePlanWorkerLimit >= 1 && data.freePlanWorkerLimit <= 10000
+        && data.proPlanWorkerLimit is number && data.proPlanWorkerLimit >= 1 && data.proPlanWorkerLimit <= 100000
+        && data.proPlanPriceInr is number && data.proPlanPriceInr >= 0
+        && data.enterprisePlanPriceInr is number && data.enterprisePlanPriceInr >= 0
+        && data.supportContact is string && data.supportContact.size() <= 160
+        && data.announcementBanner is string && data.announcementBanner.size() <= 300
+        && data.gpsGeofencing is bool
+        && data.pdfExcelExports is bool
+        && data.whatsappIntegration is bool
+        && data.multiSiteManagement is bool
+        && data.cloudBackupRestore is bool
+        && data.customBranding is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEmployer(data) {
+      return data.keys().hasAll(['id', 'ownerUid', 'businessName', 'ownerName', 'mobile', 'address', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'businessName', 'ownerName', 'mobile', 'address',
+          'accountStatus', 'subscriptionPlan', 'subscriptionExpiresAt', 'maxWorkers',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.ownerUid)
+        && data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 160
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 120
+        && isMobile10(data.mobile)
+        && data.address is string && data.address.size() <= 240
+        && (!('accountStatus' in data) || data.accountStatus in ['ACTIVE', 'SUSPENDED', 'DEACTIVATED'])
+        && (!('subscriptionPlan' in data) || data.subscriptionPlan in ['FREE', 'PRO', 'ENTERPRISE'])
+        && (!('subscriptionExpiresAt' in data) || (data.subscriptionExpiresAt is string && data.subscriptionExpiresAt.size() <= 30))
+        && (!('maxWorkers' in data) || (data.maxWorkers is number && data.maxWorkers >= 1 && data.maxWorkers <= 100000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkSite(data) {
+      return data.keys().hasAll(['id', 'employerUid', 'name', 'location', 'radiusMeters', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'employerUid', 'name', 'location', 'latitude', 'longitude', 'radiusMeters', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.employerUid)
+        && data.employerUid == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.location is string && data.location.size() <= 200
+        && (!('latitude' in data) || data.latitude == null || data.latitude is number)
+        && (!('longitude' in data) || data.longitude == null || data.longitude is number)
+        && data.radiusMeters is number && data.radiusMeters >= 50 && data.radiusMeters <= 50000
+        && data.status in ['ACTIVE', 'COMPLETED', 'PAUSED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorker(data) {
+      return data.keys().hasAll([
+          'id', 'uniqueWorkerId', 'employerUid', 'employerName', 'employerMobile',
+          'workerUid', 'siteId', 'siteName', 'name', 'mobile', 'mobileE164',
+          'photoUrl', 'skillRole', 'wageType', 'dailyWage', 'monthlySalary',
+          'overtimeRate', 'status', 'joinedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'uniqueWorkerId', 'employerUid', 'employerName', 'employerMobile',
+          'workerUid', 'siteId', 'siteName', 'siteLat', 'siteLng', 'siteRadiusMeters',
+          'name', 'mobile', 'mobileE164', 'photoUrl', 'skillRole', 'wageType',
+          'dailyWage', 'monthlySalary', 'overtimeRate', 'status', 'joinedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.uniqueWorkerId is string && data.uniqueWorkerId.size() >= 4 && data.uniqueWorkerId.size() <= 40
+        && isValidId(data.employerUid)
+        && data.employerName is string && data.employerName.size() <= 160
+        && data.employerMobile is string && data.employerMobile.size() <= 15
+        && data.workerUid is string && data.workerUid.size() <= 128
+        && data.siteId is string && data.siteId.size() <= 128
+        && data.siteName is string && data.siteName.size() <= 120
+        && (!('siteLat' in data) || data.siteLat == null || data.siteLat is number)
+        && (!('siteLng' in data) || data.siteLng == null || data.siteLng is number)
+        && (!('siteRadiusMeters' in data) || data.siteRadiusMeters == null || data.siteRadiusMeters is number)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && isMobile10(data.mobile)
+        && isMobileE164(data.mobileE164)
+        && data.photoUrl is string && data.photoUrl.size() <= 200000
+        && data.skillRole is string && data.skillRole.size() >= 1 && data.skillRole.size() <= 80
+        && data.wageType in ['DAILY', 'MONTHLY']
+        && data.dailyWage is number && data.dailyWage >= 0 && data.dailyWage <= 100000
+        && data.monthlySalary is number && data.monthlySalary >= 0 && data.monthlySalary <= 3000000
+        && data.overtimeRate is number && data.overtimeRate >= 0 && data.overtimeRate <= 10000
+        && data.status in ['ACTIVE', 'INACTIVE']
+        && isYmd(data.joinedAt)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'employerUid', 'siteId',
+          'date', 'month', 'status', 'hoursWorked', 'overtimeHours',
+          'gpsVerified', 'markedByUid', 'markedByRole', 'editReason',
+          'editHistory', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'employerUid', 'siteId',
+          'date', 'month', 'status', 'hoursWorked', 'overtimeHours',
+          'gpsLat', 'gpsLng', 'gpsVerified', 'markedByUid', 'markedByRole',
+          'editReason', 'editHistory', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.workerId)
+        && data.workerUid is string && data.workerUid.size() <= 128
+        && isMobileE164(data.workerMobileE164)
+        && isValidId(data.employerUid)
+        && data.siteId is string && data.siteId.size() <= 128
+        && isYmd(data.date)
+        && isYm(data.month)
+        && data.status in ['PRESENT', 'ABSENT', 'HALF_DAY', 'PAID_LEAVE']
+        && data.hoursWorked is number && data.hoursWorked >= 0 && data.hoursWorked <= 24
+        && data.overtimeHours is number && data.overtimeHours >= 0 && data.overtimeHours <= 16
+        && (!('gpsLat' in data) || data.gpsLat == null || data.gpsLat is number)
+        && (!('gpsLng' in data) || data.gpsLng == null || data.gpsLng is number)
+        && data.gpsVerified is bool
+        && isValidId(data.markedByUid)
+        && data.markedByUid == request.auth.uid
+        && data.markedByRole in ['OWNER', 'WORKER']
+        && data.editReason is string && data.editReason.size() <= 300
+        && data.editHistory is list && data.editHistory.size() <= 30
+        && (data.editHistory.size() == 0 || data.editHistory[0] is string)
+        && data.notes is string && data.notes.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSalary(data) {
+      return data.keys().hasAll([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'employerUid', 'month',
+          'effectiveDailyWage', 'presentDays', 'halfDays', 'paidLeaveDays', 'absentDays',
+          'totalWorkingDays', 'totalHours', 'overtimeHours', 'attendanceEarnings',
+          'overtimeEarnings', 'bonusTotal', 'deductionTotal', 'totalSalary',
+          'advanceTotal', 'paidTotal', 'remainingBalance', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'employerUid', 'month',
+          'effectiveDailyWage', 'presentDays', 'halfDays', 'paidLeaveDays', 'absentDays',
+          'totalWorkingDays', 'totalHours', 'overtimeHours', 'attendanceEarnings',
+          'overtimeEarnings', 'bonusTotal', 'deductionTotal', 'totalSalary',
+          'advanceTotal', 'paidTotal', 'remainingBalance', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.workerId)
+        && data.workerUid is string && data.workerUid.size() <= 128
+        && isMobileE164(data.workerMobileE164)
+        && isValidId(data.employerUid)
+        && isYm(data.month)
+        && data.effectiveDailyWage is number && data.effectiveDailyWage >= 0
+        && data.presentDays is number && data.presentDays >= 0
+        && data.halfDays is number && data.halfDays >= 0
+        && data.paidLeaveDays is number && data.paidLeaveDays >= 0
+        && data.absentDays is number && data.absentDays >= 0
+        && data.totalWorkingDays is number && data.totalWorkingDays >= 0
+        && data.totalHours is number && data.totalHours >= 0
+        && data.overtimeHours is number && data.overtimeHours >= 0
+        && data.attendanceEarnings is number
+        && data.overtimeEarnings is number
+        && data.bonusTotal is number
+        && data.deductionTotal is number
+        && data.totalSalary is number
+        && data.advanceTotal is number
+        && data.paidTotal is number
+        && data.remainingBalance is number
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'id', 'category', 'employerUid', 'workerId', 'workerUid', 'workerMobileE164',
+          'workerName', 'uniqueWorkerId', 'siteId', 'amount', 'mode', 'referenceNo',
+          'date', 'month', 'time', 'description', 'recordedByUid', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'category', 'employerUid', 'workerId', 'workerUid', 'workerMobileE164',
+          'workerName', 'uniqueWorkerId', 'siteId', 'amount', 'mode', 'referenceNo',
+          'date', 'month', 'time', 'description', 'recordedByUid', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.category in ['PAYMENT', 'ADVANCE', 'BONUS', 'DEDUCTION', 'EXPENSE']
+        && isValidId(data.employerUid)
+        && data.employerUid == request.auth.uid
+        && data.workerId is string && data.workerId.size() <= 128
+        && data.workerUid is string && data.workerUid.size() <= 128
+        && data.workerMobileE164 is string && data.workerMobileE164.size() <= 15
+        && data.workerName is string && data.workerName.size() >= 1 && data.workerName.size() <= 160
+        && data.uniqueWorkerId is string && data.uniqueWorkerId.size() <= 40
+        && data.siteId is string && data.siteId.size() <= 128
+        && data.amount is number && data.amount > 0 && data.amount <= 10000000
+        && data.mode in ['CASH', 'UPI', 'BANK', 'ADJUSTMENT', 'SITE']
+        && data.referenceNo is string && data.referenceNo.size() <= 80
+        && isYmd(data.date)
+        && isYm(data.month)
+        && data.time is string && data.time.size() >= 4 && data.time.size() <= 10
+        && data.description is string && data.description.size() <= 300
+        && isValidId(data.recordedByUid)
+        && data.recordedByUid == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidLeaveRequest(data) {
+      return data.keys().hasAll([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'workerName',
+          'uniqueWorkerId', 'employerUid', 'fromDate', 'toDate', 'reason',
+          'status', 'ownerNote', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'workerId', 'workerUid', 'workerMobileE164', 'workerName',
+          'uniqueWorkerId', 'employerUid', 'fromDate', 'toDate', 'reason',
+          'status', 'ownerNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.workerId)
+        && isValidId(data.workerUid)
+        && isMobileE164(data.workerMobileE164)
+        && data.workerName is string && data.workerName.size() >= 1 && data.workerName.size() <= 120
+        && data.uniqueWorkerId is string && data.uniqueWorkerId.size() <= 40
+        && isValidId(data.employerUid)
+        && isYmd(data.fromDate)
+        && isYmd(data.toDate)
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300
+        && data.status in ['PENDING', 'APPROVED', 'REJECTED']
+        && data.ownerNote is string && data.ownerNote.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+          'id', 'employerUid', 'workerId', 'workerUid', 'workerMobileE164',
+          'type', 'titleEn', 'titleHi', 'messageEn', 'messageHi',
+          'isRead', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'employerUid', 'workerId', 'workerUid', 'workerMobileE164',
+          'type', 'titleEn', 'titleHi', 'messageEn', 'messageHi',
+          'isRead', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.employerUid)
+        && isValidId(data.workerId)
+        && data.workerUid is string && data.workerUid.size() <= 128
+        && isMobileE164(data.workerMobileE164)
+        && data.type is string && data.type.size() >= 1 && data.type.size() <= 40
+        && data.titleEn is string && data.titleEn.size() >= 1 && data.titleEn.size() <= 140
+        && data.titleHi is string && data.titleHi.size() >= 1 && data.titleHi.size() <= 140
+        && data.messageEn is string && data.messageEn.size() >= 1 && data.messageEn.size() <= 400
+        && data.messageHi is string && data.messageHi.size() >= 1 && data.messageHi.size() <= 400
+        && data.isRead is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+          'id', 'employerUid', 'workerId', 'actorUid', 'actorName', 'actorRole',
+          'action', 'entityType', 'entityId', 'reason', 'summary', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'employerUid', 'workerId', 'actorUid', 'actorName', 'actorRole',
+          'action', 'entityType', 'entityId', 'reason', 'summary', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.employerUid)
+        && data.workerId is string && data.workerId.size() <= 128
+        && isValidId(data.actorUid)
+        && data.actorUid == request.auth.uid
+        && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120
+        && data.actorRole in ['OWNER', 'WORKER', 'SUPER_ADMIN']
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 80
+        && data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 60
+        && data.entityId is string && data.entityId.size() <= 128
+        && data.reason is string && data.reason.size() <= 300
+        && data.summary is string && data.summary.size() <= 400
+        && data.createdAt is timestamp;
+    }
+
+    // ------------------------------------------------------------------------
+    // Connection Check Endpoint
+    // ------------------------------------------------------------------------
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // ------------------------------------------------------------------------
+    // Super Admin Registry (Strictly Server/Console Managed - Immutable from Client)
+    // ------------------------------------------------------------------------
+    match /super_admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (adminId == request.auth.uid || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // ------------------------------------------------------------------------
+    // Global App Settings (Readable by Signed-in Users; Writable ONLY by Founder Raja)
+    // ------------------------------------------------------------------------
+    match /app_settings/{settingId} {
+      allow get: if isSignedIn() && isValidId(settingId) && settingId == 'global';
+      allow list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin()
+        && isValidId(settingId)
+        && settingId == 'global'
+        && isValidAppSettings(incoming())
+        && incoming().updatedAt == request.time;
+    }
+
+    // ------------------------------------------------------------------------
+    // Users (PII Isolated to Self; Founder Super Admin manages all non-founder statuses)
+    // ------------------------------------------------------------------------
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (userId == request.auth.uid || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && incoming().uid == request.auth.uid
+        && isValidUser(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Standard user creation: strictly WORKER or OWNER, ACTIVE, non-founder
+          (
+            incoming().role in ['WORKER', 'OWNER'] &&
+            (!('accountStatus' in incoming()) || incoming().accountStatus == 'ACTIVE') &&
+            (!('isFounder' in incoming()) || incoming().isFounder == false)
+          ) ||
+          // Bootstrapping verified Founder Raja
+          (isSuperAdmin() && incoming().role == 'SUPER_ADMIN' && incoming().get('isFounder', true) == true)
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUser(incoming())
+        && incoming().uid == existing().uid
+        && incoming().role == existing().role
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Self profile preference update (cannot alter role, accountStatus, or isFounder)
+          (
+            userId == request.auth.uid &&
+            incoming().get('accountStatus', 'ACTIVE') == existing().get('accountStatus', 'ACTIVE') &&
+            incoming().get('isFounder', false) == existing().get('isFounder', false) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'language', 'theme', 'mobile', 'mobileE164', 'email', 'employerUid', 'updatedAt'])
+          ) ||
+          // Tier 2: Super Admin managing ordinary users (cannot suspend/demote a SUPER_ADMIN)
+          (
+            isSuperAdmin() &&
+            existing().role != 'SUPER_ADMIN' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['accountStatus', 'statusReason', 'updatedAt'])
+          )
+        );
+      allow delete: if isSuperAdmin() && isValidId(userId) && existing().role != 'SUPER_ADMIN';
+    }
+
+    // ------------------------------------------------------------------------
+    // Employers (Owner-scoped organization profile; Founder manages subscriptions & status)
+    // ------------------------------------------------------------------------
+    match /employers/{employerId} {
+      allow get: if isSignedIn() && isValidId(employerId) && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(employerId)
+        && employerId == request.auth.uid
+        && incoming().ownerUid == request.auth.uid
+        && isValidEmployer(incoming())
+        && (!('accountStatus' in incoming()) || incoming().accountStatus == 'ACTIVE')
+        && (!('subscriptionPlan' in incoming()) || incoming().subscriptionPlan == 'FREE')
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(employerId)
+        && isValidEmployer(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            existing().ownerUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['businessName', 'ownerName', 'mobile', 'address', 'updatedAt'])
+          ) ||
+          (
+            isSuperAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['accountStatus', 'subscriptionPlan', 'subscriptionExpiresAt', 'maxWorkers', 'updatedAt'])
+          )
+        );
+      allow delete: if isSuperAdmin() && isValidId(employerId);
+    }
+
+    // ------------------------------------------------------------------------
+    // Work Sites (Employer-owned)
+    // ------------------------------------------------------------------------
+    match /work_sites/{siteId} {
+      allow get: if isSignedIn() && isValidId(siteId) && (existing().employerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.employerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(siteId)
+        && isValidWorkSite(incoming())
+        && incoming().id == siteId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/employers/$(request.auth.uid));
+      allow update: if isVerifiedUser()
+        && isValidId(siteId)
+        && existing().employerUid == request.auth.uid
+        && isValidWorkSite(incoming())
+        && incoming().id == existing().id
+        && incoming().employerUid == existing().employerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'latitude', 'longitude', 'radiusMeters', 'status', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(siteId) && (existing().employerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    // ------------------------------------------------------------------------
+    // Workers (Owner manages; Worker can read own & claim unlinked workerUid; Super Admin oversees)
+    // ------------------------------------------------------------------------
+    match /workers/{workerId} {
+      allow get: if isSignedIn() && isValidId(workerId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().mobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.mobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(workerId)
+        && isValidWorker(incoming())
+        && incoming().id == workerId
+        && incoming().employerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/employers/$(request.auth.uid));
+      allow update: if isVerifiedUser()
+        && isValidId(workerId)
+        && isValidWorker(incoming())
+        && incoming().id == existing().id
+        && incoming().employerUid == existing().employerUid
+        && incoming().uniqueWorkerId == existing().uniqueWorkerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: Owning Employer
+          (existing().employerUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'mobile', 'mobileE164', 'skillRole', 'siteId', 'siteName',
+              'siteLat', 'siteLng', 'siteRadiusMeters', 'wageType', 'dailyWage',
+              'monthlySalary', 'overtimeRate', 'photoUrl', 'status', 'workerUid', 'updatedAt'
+            ])
+          ) ||
+          // Tier 2: Worker claims their unlinked profile via verified phone number
+          (existing().workerUid == '' &&
+            isMatchesPhone(existing().mobileE164) &&
+            incoming().workerUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['workerUid', 'updatedAt'])
+          ) ||
+          // Tier 3: Super Admin toggling worker profile status
+          (isSuperAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(workerId) && (existing().employerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    // ------------------------------------------------------------------------
+    // Attendance (Employer marks/edits with history; Worker is read-only except initial GPS check-in)
+    // ------------------------------------------------------------------------
+    match /attendance/{attendanceId} {
+      allow get: if isSignedIn() && isValidId(attendanceId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(attendanceId)
+        && isValidAttendance(incoming())
+        && incoming().id == attendanceId
+        && exists(/databases/$(database)/documents/workers/$(incoming().workerId))
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Owner marking attendance
+          (incoming().employerUid == request.auth.uid &&
+            incoming().markedByRole == 'OWNER' &&
+            get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.employerUid == request.auth.uid
+          ) ||
+          // Worker self GPS check-in (no overtime allowed, GPS required)
+          (incoming().markedByRole == 'WORKER' &&
+            incoming().status == 'PRESENT' &&
+            incoming().overtimeHours == 0 &&
+            incoming().gpsVerified == true &&
+            (
+              get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.workerUid == request.auth.uid ||
+              isMatchesPhone(get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.mobileE164)
+            )
+          )
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(attendanceId)
+        && existing().employerUid == request.auth.uid
+        && isValidAttendance(incoming())
+        && incoming().id == existing().id
+        && incoming().workerId == existing().workerId
+        && incoming().employerUid == existing().employerUid
+        && incoming().date == existing().date
+        && incoming().month == existing().month
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().markedByRole == 'OWNER'
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'hoursWorked', 'overtimeHours', 'siteId', 'gpsLat', 'gpsLng',
+          'gpsVerified', 'markedByUid', 'markedByRole', 'editReason', 'editHistory',
+          'notes', 'workerUid', 'updatedAt'
+        ]);
+    }
+
+    // ------------------------------------------------------------------------
+    // Salaries (Monthly Aggregates)
+    // ------------------------------------------------------------------------
+    match /salaries/{salaryId} {
+      allow get: if isSignedIn() && isValidId(salaryId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(salaryId)
+        && isValidSalary(incoming())
+        && incoming().id == salaryId
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/workers/$(incoming().workerId))
+        && (
+          incoming().employerUid == request.auth.uid ||
+          get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.workerUid == request.auth.uid ||
+          isMatchesPhone(get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.mobileE164)
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(salaryId)
+        && existing().employerUid == request.auth.uid
+        && isValidSalary(incoming())
+        && incoming().id == existing().id
+        && incoming().workerId == existing().workerId
+        && incoming().employerUid == existing().employerUid
+        && incoming().month == existing().month
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'workerUid', 'effectiveDailyWage', 'presentDays', 'halfDays', 'paidLeaveDays',
+          'absentDays', 'totalWorkingDays', 'totalHours', 'overtimeHours',
+          'attendanceEarnings', 'overtimeEarnings', 'bonusTotal', 'deductionTotal',
+          'totalSalary', 'advanceTotal', 'paidTotal', 'remainingBalance', 'updatedAt'
+        ]);
+    }
+
+    // ------------------------------------------------------------------------
+    // Financial Transactions (Immutable Ledger - Owner Creates Only)
+    // ------------------------------------------------------------------------
+    match /transactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(txId)
+        && isValidTransaction(incoming())
+        && incoming().id == txId
+        && incoming().employerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/employers/$(request.auth.uid))
+        && (
+          incoming().workerId == '' ||
+          (
+            exists(/databases/$(database)/documents/workers/$(incoming().workerId)) &&
+            get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.employerUid == request.auth.uid
+          )
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Leave Requests (Worker creates PENDING; Owner approves/rejects once)
+    // ------------------------------------------------------------------------
+    match /leave_requests/{leaveId} {
+      allow get: if isSignedIn() && isValidId(leaveId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(leaveId)
+        && isValidLeaveRequest(incoming())
+        && incoming().id == leaveId
+        && incoming().workerUid == request.auth.uid
+        && incoming().status == 'PENDING'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/workers/$(incoming().workerId));
+      allow update: if isVerifiedUser()
+        && isValidId(leaveId)
+        && existing().employerUid == request.auth.uid
+        && existing().status == 'PENDING'
+        && isValidLeaveRequest(incoming())
+        && incoming().id == existing().id
+        && incoming().workerId == existing().workerId
+        && incoming().workerUid == existing().workerUid
+        && incoming().employerUid == existing().employerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['APPROVED', 'REJECTED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'ownerNote', 'updatedAt']);
+    }
+
+    // ------------------------------------------------------------------------
+    // Notifications (Owner creates; Worker reads and marks read)
+    // ------------------------------------------------------------------------
+    match /notifications/{notifId} {
+      allow get: if isSignedIn() && isValidId(notifId) && (
+        existing().employerUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isMatchesPhone(existing().workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.employerUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isMatchesPhone(resource.data.workerMobileE164) ||
+        isSuperAdmin()
+      );
+      allow create: if isVerifiedUser()
+        && isValidId(notifId)
+        && isValidNotification(incoming())
+        && incoming().id == notifId
+        && incoming().employerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/workers/$(incoming().workerId))
+        && get(/databases/$(database)/documents/workers/$(incoming().workerId)).data.employerUid == request.auth.uid;
+      allow update: if isVerifiedUser()
+        && isValidId(notifId)
+        && (existing().workerUid == request.auth.uid || isMatchesPhone(existing().workerMobileE164))
+        && isValidNotification(incoming())
+        && incoming().id == existing().id
+        && incoming().employerUid == existing().employerUid
+        && incoming().workerId == existing().workerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().isRead == true
+        && incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']);
+    }
+
+    // ------------------------------------------------------------------------
+    // Audit Logs (Immutable trail)
+    // ------------------------------------------------------------------------
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (existing().employerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.employerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidAuditLog(incoming())
+        && incoming().id == logId
+        && incoming().actorUid == request.auth.uid
+        && incoming().createdAt == request.time;
+    }
+  }
+}

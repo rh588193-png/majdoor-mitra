@@ -1,0 +1,4 @@
+-keepattributes Signature,InnerClasses,EnclosingMethod
+-keepclassmembers class com.majdoor.mitra.model.** { *; }
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**

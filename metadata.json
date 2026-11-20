@@ -1,0 +1,10 @@
+{
+  "name": "Remix MAJDOOR MITRA",
+  "description": "Digital attendance, salary, advance, and transparent accounting platform for Indian workers and employers — मजदूर का साथी, हिसाब में पारदर्शिता.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
